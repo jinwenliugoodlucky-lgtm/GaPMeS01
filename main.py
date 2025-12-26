@@ -41,6 +41,148 @@ def cyan(text: str) -> str:
     return f"{Fore.CYAN}{text}{Fore.RESET}"
 
 
+def freeze_pretrained_weights(model, state_dict):
+    """
+    Freeze parameters that were loaded from pretrained checkpoint
+    
+    Args:
+        model: The model with loaded weights
+        state_dict: The state dict that was loaded
+    """
+    for name, param in model.named_parameters():
+        if name in state_dict:
+            param.requires_grad = False
+
+
+def freeze_encoder(model):
+    """Freeze only the encoder part of the model"""
+    print("Freezing encoder weights...")
+    frozen_count = 0
+    
+    for name, param in model.named_parameters():
+        if 'encoder' in name:
+            param.requires_grad = False
+            frozen_count += 1
+    
+    print(f"Frozen {frozen_count} encoder parameters")
+    return model
+
+
+def freeze_depth_model(model):
+    """Freeze depth estimation related modules"""
+    print("Freezing depth model weights...")
+    frozen_count = 0
+    
+    freeze_modules = ['depth_predictor', 'depth_encoder', 'depth_head', 'depth_anything']
+    
+    for name, param in model.named_parameters():
+        for module_name in freeze_modules:
+            if module_name in name:
+                param.requires_grad = False
+                frozen_count += 1
+                break
+    
+    print(f"Frozen {frozen_count} depth model parameters")
+    return model
+
+
+def freeze_decoder(model):
+    """Freeze only the decoder part of the model"""
+    print("Freezing decoder weights...")
+    frozen_count = 0
+    
+    for name, param in model.named_parameters():
+        if 'decoder' in name:
+            param.requires_grad = False
+            frozen_count += 1
+    
+    print(f"Frozen {frozen_count} decoder parameters")
+    return model
+
+
+def selective_freeze(model, freeze_patterns):
+    """
+    Selectively freeze specific layers by name patterns
+    
+    Args:
+        model: The model
+        freeze_patterns: List of layer name patterns to freeze
+    """
+    frozen_count = 0
+    
+    for name, param in model.named_parameters():
+        for pattern in freeze_patterns:
+            if pattern in name:
+                param.requires_grad = False
+                frozen_count += 1
+                break
+    
+    print(f"Frozen {frozen_count} parameters matching patterns: {freeze_patterns}")
+    return model
+
+
+def count_frozen_params(model):
+    """Count number of frozen parameters"""
+    return sum(1 for p in model.parameters() if not p.requires_grad)
+
+
+def count_trainable_params(model):
+    """Count number of trainable parameters"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def print_trainable_params(model):
+    """Print trainable parameter statistics"""
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = count_trainable_params(model)
+    frozen_params = total_params - trainable_params
+    
+    print("=" * 60)
+    print("Parameter Statistics:")
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,} ({100*trainable_params/total_params:.2f}%)")
+    print(f"Frozen parameters: {frozen_params:,} ({100*frozen_params/total_params:.2f}%)")
+    print("=" * 60)
+
+
+def load_and_freeze_weights(model, checkpoint_path, freeze_config):
+    """
+    Load pretrained weights and apply freezing strategy
+    
+    Args:
+        model: The model to load weights into
+        checkpoint_path: Path to the checkpoint file
+        freeze_config: Dictionary with freezing configuration
+            - freeze_all: bool, freeze all loaded weights
+            - freeze_encoder: bool, freeze only encoder
+            - freeze_decoder: bool, freeze only decoder
+            - freeze_depth: bool, freeze only depth model
+            - freeze_patterns: list, specific patterns to freeze
+    """
+    pretrained_model = torch.load(checkpoint_path, map_location='cpu')
+    if 'state_dict' in pretrained_model:
+        state_dict = pretrained_model['state_dict']
+    else:
+        state_dict = pretrained_model
+    
+    # Apply freezing based on configuration
+    if freeze_config.get('freeze_all', False):
+        print("Freezing all pretrained weights...")
+        freeze_pretrained_weights(model, state_dict)
+    elif freeze_config.get('freeze_encoder', False):
+        freeze_encoder(model)
+    elif freeze_config.get('freeze_decoder', False):
+        freeze_decoder(model)
+    elif freeze_config.get('freeze_depth', False):
+        freeze_depth_model(model)
+    elif 'freeze_patterns' in freeze_config:
+        selective_freeze(model, freeze_config['freeze_patterns'])
+    
+    print_trainable_params(model)
+    
+    return model
+
+
 @hydra.main(
     version_base=None,
     config_path="../config",
@@ -177,6 +319,16 @@ def train(cfg_dict: DictConfig):
         print("test:", len(data_module.test_dataloader()))
 
     strict_load = not cfg.checkpointing.no_strict_load
+    
+    # Get freeze configuration
+    freeze_config = {
+        'freeze_all': cfg_dict.get('freeze_pretrained', False),
+        'freeze_encoder': cfg_dict.get('freeze_encoder_only', False),
+        'freeze_decoder': cfg_dict.get('freeze_decoder_only', False),
+        'freeze_depth': cfg_dict.get('freeze_depth_only', False),
+    }
+    if 'freeze_patterns' in cfg_dict:
+        freeze_config['freeze_patterns'] = cfg_dict.freeze_patterns
 
     if cfg.mode == "train":
         # only load monodepth
@@ -187,35 +339,35 @@ def train(cfg_dict: DictConfig):
                 pretrained_model = pretrained_model['state_dict']
 
             model_wrapper.encoder.depth_predictor.load_state_dict(pretrained_model, strict=strict_load)
-            print(
-                cyan(
-                    f"Loaded pretrained monodepth: {cfg.checkpointing.pretrained_monodepth}"
-                )
-            )
+            print(cyan(f"Loaded pretrained monodepth: {cfg.checkpointing.pretrained_monodepth}"))
+            
+            if freeze_config.get('freeze_depth', False):
+                freeze_depth_model(model_wrapper)
 
         # load pretrained mvdepth
         if cfg.checkpointing.pretrained_mvdepth is not None:
             pretrained_model = torch.load(cfg.checkpointing.pretrained_mvdepth, map_location='cpu')['model']
 
             model_wrapper.encoder.depth_predictor.load_state_dict(pretrained_model, strict=False)
-            print(
-                cyan(
-                    f"Loaded pretrained mvdepth: {cfg.checkpointing.pretrained_mvdepth}"
-                )
-            )
+            print(cyan(f"Loaded pretrained mvdepth: {cfg.checkpointing.pretrained_mvdepth}"))
+            
+            if freeze_config.get('freeze_depth', False):
+                freeze_depth_model(model_wrapper)
         
         # load full model
         if cfg.checkpointing.pretrained_model is not None:
             pretrained_model = torch.load(cfg.checkpointing.pretrained_model, map_location='cpu')
             if 'state_dict' in pretrained_model:
-                pretrained_model = pretrained_model['state_dict']
+                state_dict = pretrained_model['state_dict']
+            else:
+                state_dict = pretrained_model
 
-            model_wrapper.load_state_dict(pretrained_model, strict=strict_load)
-            print(
-                cyan(
-                    f"Loaded pretrained weights: {cfg.checkpointing.pretrained_model}"
-                )
-            )
+            model_wrapper.load_state_dict(state_dict, strict=strict_load)
+            print(cyan(f"Loaded pretrained weights: {cfg.checkpointing.pretrained_model}"))
+            
+            # Apply freezing strategy
+            if any(freeze_config.values()):
+                load_and_freeze_weights(model_wrapper, cfg.checkpointing.pretrained_model, freeze_config)
 
         # load pretrained depth
         if cfg.checkpointing.pretrained_depth is not None:
@@ -223,11 +375,14 @@ def train(cfg_dict: DictConfig):
 
             strict_load = True
             model_wrapper.encoder.depth_predictor.load_state_dict(pretrained_model, strict=strict_load)
-            print(
-                cyan(
-                    f"Loaded pretrained depth: {cfg.checkpointing.pretrained_depth}"
-                )
-            )
+            print(cyan(f"Loaded pretrained depth: {cfg.checkpointing.pretrained_depth}"))
+            
+            if freeze_config.get('freeze_depth', False):
+                freeze_depth_model(model_wrapper)
+        
+        # Print final parameter statistics
+        if any(freeze_config.values()):
+            print_trainable_params(model_wrapper)
             
         trainer.fit(model_wrapper, datamodule=data_module, ckpt_path=checkpoint_path)
     else:
@@ -238,11 +393,7 @@ def train(cfg_dict: DictConfig):
                 pretrained_model = pretrained_model['state_dict']
 
             model_wrapper.load_state_dict(pretrained_model, strict=strict_load)
-            print(
-                cyan(
-                    f"Loaded pretrained weights: {cfg.checkpointing.pretrained_model}"
-                )
-            )
+            print(cyan(f"Loaded pretrained weights: {cfg.checkpointing.pretrained_model}"))
 
         # load pretrained depth model only
         if cfg.checkpointing.pretrained_depth is not None:
@@ -250,11 +401,7 @@ def train(cfg_dict: DictConfig):
 
             strict_load = True
             model_wrapper.encoder.depth_predictor.load_state_dict(pretrained_model, strict=strict_load)
-            print(
-                cyan(
-                    f"Loaded pretrained depth: {cfg.checkpointing.pretrained_depth}"
-                )
-            )
+            print(cyan(f"Loaded pretrained depth: {cfg.checkpointing.pretrained_depth}"))
             
         trainer.test(
             model_wrapper,
@@ -270,6 +417,5 @@ if __name__ == "__main__":
 
     warnings.filterwarnings("ignore")
     torch.set_float32_matmul_precision('high')
-
 
     train()
