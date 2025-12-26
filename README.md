@@ -253,35 +253,22 @@ python utils_llff.py \
 ### DL3DV Training
 
 ```bash
-bash scripts/dl3dv_gapmes_train.sh
-```
-
-Or using Python:
-```bash
-python src/main.py \
-    experiment=dl3dv \
-    mode=train \
-    dataset.roots=[datasets/dl3dv/train_processed] \
-    trainer.max_epochs=100
+bash scripts/dl3dv_train.sh
 ```
 
 ### RE10K Training
 
 ```bash
-bash scripts/re10k_gapmes_train.sh
+bash scripts/re10k_train.sh
 ```
 
 ### Monitor Training
 
 ```bash
-# TensorBoard
-tensorboard --logdir outputs/
-
 # Weights & Biases
 wandb login
 # Training will automatically log to wandb
 ```
-
 ---
 
 ## Troubleshooting
